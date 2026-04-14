@@ -1,4 +1,5 @@
-# Solana Hackathon con WayLearn
+# Taller de Frontend 
+
 ![Banner](./images/BannerFrontend.jpg)
 
 En este repositorio te explicaremos como hacer un cliente de Solana y como integrarlo a un frontend apartir de un IDL generado en Solana Playground.
