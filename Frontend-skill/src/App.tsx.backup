@@ -1,0 +1,334 @@
+import { Buffer } from 'buffer'
+globalThis.Buffer = Buffer
+import { useState } from 'react'
+
+// Librerias Web3
+import { useWallet, useConnection } from '@solana/wallet-adapter-react'
+import { WalletMultiButton } from '@solana/wallet-adapter-react-ui'
+import {
+  PublicKey,
+  Transaction,
+  TransactionInstruction,
+  type AccountMeta as Web3AccountMeta,
+} from '@solana/web3.js'
+import { address } from '@solana/kit'
+import type { Address, AccountMeta, TransactionSigner } from '@solana/kit'
+
+// Instrucciones del Cliente generado
+import { getInitializeProfileInstruction } from '../clients/js/src/generated/instructions/initializeProfile'
+import { getReadProfileInstruction }       from '../clients/js/src/generated/instructions/readProfile'
+import { getUpdateProfileInstruction }     from '../clients/js/src/generated/instructions/updateProfile'
+import { getAddSkillInstruction }          from '../clients/js/src/generated/instructions/addSkill'
+import { getCloseProfileInstruction }      from '../clients/js/src/generated/instructions/closeProfile'
+
+// ─── Program ID como PublicKey de web3.js ─────────────────────────────────────
+// SKILL_PROOF_AUTH_PROGRAM_ADDRESS es un Address de @solana/kit
+// lo convertimos a PublicKey de web3.js para usar con findProgramAddress
+const PROGRAM_PUBKEY = new PublicKey("GggskLBZBfEWv2h27kfGr3vsSniUFyCXCvDzvsMR4T3C")
+
+// ─── Convertir instruccion Codama (kit) a Web3.js ────────────────────────────
+
+function kitIxToWeb3Ix(ix: {
+  programAddress: Address
+  accounts: readonly AccountMeta[]
+  data: Uint8Array
+}): TransactionInstruction {
+  const keys: Web3AccountMeta[] = ix.accounts.map((acc) => ({
+    pubkey: new PublicKey(acc.address as string),
+    isSigner: acc.role === 2 || acc.role === 3,
+    isWritable: acc.role === 1 || acc.role === 3,
+  }))
+  return new TransactionInstruction({
+    programId: new PublicKey(ix.programAddress as string),
+    keys,
+    data: Buffer.from(ix.data),
+  })
+}
+
+// ─── Derivar PDA del perfil ───────────────────────────────────────────────────
+// Recibe PublicKey directamente — evita conversion string que causa Non-base58
+
+async function derivarUserProfilePDA(ownerPubkey: PublicKey): Promise<Address> {
+  const [pda] = await PublicKey.findProgramAddress(
+    [
+      Buffer.from('user-profile'),
+      ownerPubkey.toBuffer(), // ← directo, sin pasar por string
+    ],
+    PROGRAM_PUBKEY
+  )
+  return address(pda.toBase58())
+}
+
+// ─── App ──────────────────────────────────────────────────────────────────────
+
+export default function App() {
+  const { publicKey, connected, sendTransaction } = useWallet()
+  const { connection } = useConnection()
+
+  const [name, setName]       = useState('')
+  const [newName, setNewName] = useState('')
+  const [points, setPoints]   = useState(100)
+  const [txSig, setTxSig]     = useState('')
+  const [loading, setLoading] = useState(false)
+  const [error, setError]     = useState<unknown>(null)
+
+  // ─── makeTransaction ───────────────────────────────────────────────────────
+
+  async function makeTransaction(web3Ix: TransactionInstruction) {
+    const { blockhash } = await connection.getLatestBlockhash()
+    const tx = new Transaction()
+    tx.recentBlockhash = blockhash
+    tx.feePayer = publicKey!
+    tx.add(web3Ix)
+    const sig = await sendTransaction(tx, connection)
+    setTxSig(sig)
+    console.log('TX:', sig)
+    console.log('Explorer: https://explorer.solana.com/tx/' + sig + '?cluster=devnet')
+  }
+
+  // ─── Signer helper ────────────────────────────────────────────────────────
+
+  function getSigner(): TransactionSigner {
+  return {
+    address: address(publicKey!.toBase58()),
+    signTransactions: async (txs) => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      return txs.map(() => ({})) as any
+    },
+  } as TransactionSigner
+}
+  // ─── 1. CREATE ────────────────────────────────────────────────────────────
+
+  async function handleInitializeProfile() {
+    if (!publicKey || !name.trim()) return
+    setLoading(true)
+    setError(null)
+    try {
+      const profilePDA = await derivarUserProfilePDA(publicKey) // ← sin .toBase58()
+
+      const kitIx = getInitializeProfileInstruction({
+        profile: profilePDA,
+        owner: getSigner(),
+        name: name.trim(),
+      })
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      await makeTransaction(kitIxToWeb3Ix(kitIx as any))
+    } catch (e) {
+      setError(e)
+      console.error(e)
+    }
+    setLoading(false)
+  }
+
+  // ─── 2. READ ──────────────────────────────────────────────────────────────
+
+  async function handleReadProfile() {
+    if (!publicKey) return
+    setLoading(true)
+    setError(null)
+    try {
+      const profilePDA = await derivarUserProfilePDA(publicKey)
+
+      const kitIx = getReadProfileInstruction({
+        profile: profilePDA,
+        owner: getSigner(),
+      })
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      await makeTransaction(kitIxToWeb3Ix(kitIx as any))
+    } catch (e) {
+      setError(e)
+      console.error(e)
+    }
+    setLoading(false)
+  }
+
+  // ─── 3. UPDATE nombre ─────────────────────────────────────────────────────
+
+  async function handleUpdateProfile() {
+    if (!publicKey || !newName.trim()) return
+    setLoading(true)
+    setError(null)
+    try {
+      const profilePDA = await derivarUserProfilePDA(publicKey)
+
+      const kitIx = getUpdateProfileInstruction({
+        profile: profilePDA,
+        owner: getSigner(),
+        newName: newName.trim(),
+      })
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      await makeTransaction(kitIxToWeb3Ix(kitIx as any))
+    } catch (e) {
+      setError(e)
+      console.error(e)
+    }
+    setLoading(false)
+  }
+
+  // ─── 4. ADD SKILL ─────────────────────────────────────────────────────────
+
+  async function handleAddSkill() {
+    if (!publicKey) return
+    setLoading(true)
+    setError(null)
+    try {
+      const profilePDA = await derivarUserProfilePDA(publicKey)
+
+      const kitIx = getAddSkillInstruction({
+        profile: profilePDA,
+        admin: getSigner(),
+        points: Number(points),
+      })
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      await makeTransaction(kitIxToWeb3Ix(kitIx as any))
+    } catch (e) {
+      setError(e)
+      console.error(e)
+    }
+    setLoading(false)
+  }
+
+  // ─── 5. DELETE ────────────────────────────────────────────────────────────
+
+  async function handleCloseProfile() {
+    if (!publicKey) return
+    setLoading(true)
+    setError(null)
+    try {
+      const profilePDA = await derivarUserProfilePDA(publicKey)
+
+      const kitIx = getCloseProfileInstruction({
+        profile: profilePDA,
+        owner: getSigner(),
+      })
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      await makeTransaction(kitIxToWeb3Ix(kitIx as any))
+    } catch (e) {
+      setError(e)
+      console.error(e)
+    }
+    setLoading(false)
+  }
+
+  // ─── UI ───────────────────────────────────────────────────────────────────
+
+  return (
+    <div style={{ padding: '2rem', fontFamily: 'monospace', maxWidth: '600px', margin: '0 auto' }}>
+      <h1>skill_proof_auth</h1>
+
+      <WalletMultiButton />
+
+      {connected && (
+        <>
+          <p style={{ fontSize: '12px', color: '#888', marginTop: '8px' }}>
+            Wallet: {publicKey?.toBase58()}
+          </p>
+
+          <hr />
+
+          <section>
+            <h2>1. Crear Perfil</h2>
+            <input
+              placeholder="Tu nombre"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              style={{ marginRight: '8px', padding: '4px' }}
+            />
+            <button onClick={handleInitializeProfile} disabled={loading}>
+              Crear
+            </button>
+          </section>
+
+          <hr />
+
+          <section>
+            <h2>2. Leer Perfil (logs on-chain)</h2>
+            <button onClick={handleReadProfile} disabled={loading}>
+              Leer
+            </button>
+          </section>
+
+          <hr />
+
+          <section>
+            <h2>3. Actualizar Nombre</h2>
+            <input
+              placeholder="Nuevo nombre"
+              value={newName}
+              onChange={(e) => setNewName(e.target.value)}
+              style={{ marginRight: '8px', padding: '4px' }}
+            />
+            <button onClick={handleUpdateProfile} disabled={loading}>
+              Actualizar
+            </button>
+          </section>
+
+          <hr />
+
+          <section>
+            <h2>4. Agregar Skill (admin)</h2>
+            <input
+              type="number"
+              value={points}
+              onChange={(e) => setPoints(Number(e.target.value))}
+              style={{ marginRight: '8px', padding: '4px', width: '80px' }}
+            />
+            <span style={{ marginRight: '8px', fontSize: '13px' }}>puntos</span>
+            <button onClick={handleAddSkill} disabled={loading}>
+              Agregar Skill
+            </button>
+          </section>
+
+          <hr />
+
+          <section>
+            <h2>5. Cerrar Perfil</h2>
+            <button
+              onClick={handleCloseProfile}
+              disabled={loading}
+              style={{ background: '#c0392b', color: 'white', border: 'none', padding: '6px 12px', cursor: 'pointer' }}
+            >
+              Cerrar y recuperar rent
+            </button>
+          </section>
+
+          <hr />
+
+          {txSig && (
+            <section>
+              <h3>Ultima TX</h3>
+              <a
+                href={`https://explorer.solana.com/tx/${txSig}?cluster=devnet`}
+                target="_blank"
+                rel="noreferrer"
+                style={{ fontSize: '12px', wordBreak: 'break-all' }}
+              >
+                {txSig}
+              </a>
+            </section>
+          )}
+
+          {error && (
+            <section>
+              <h3 style={{ color: '#c0392b' }}>Error</h3>
+              <pre style={{ fontSize: '11px', background: '#fee', padding: '8px' }}>
+                {(error as Error)?.message ?? JSON.stringify(error)}
+              </pre>
+            </section>
+          )}
+        </>
+      )}
+
+      {!connected && (
+        <p style={{ marginTop: '1rem', color: '#888' }}>
+          Conecta tu wallet Phantom en Devnet para continuar.
+        </p>
+      )}
+    </div>
+  )
+}
